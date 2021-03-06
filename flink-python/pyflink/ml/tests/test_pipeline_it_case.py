@@ -25,7 +25,7 @@ from pyflink.ml.lib.param.colname import HasSelectedCols, \
     HasPredictionCol, HasOutputCol
 from pyflink.table.types import DataTypes
 from pyflink.testing import source_sink_utils
-from pyflink.testing.test_case_utils import MLTestCase, exec_insert_table
+from pyflink.testing.test_case_utils import MLTestCase
 
 
 class HasVectorCol(WithParams):
@@ -49,9 +49,10 @@ class WrapperTransformer(JavaTransformer, HasSelectedCols):
     """
     A Transformer wrappers Java Transformer.
     """
+
     @keyword
     def __init__(self, *, selected_cols=None):
-        _j_obj = get_gateway().jvm.org.apache.flink.ml.pipeline.\
+        _j_obj = get_gateway().jvm.org.apache.flink.ml.pipeline. \
             UserDefinedPipelineStages.SelectColumnTransformer()
         super().__init__(_j_obj)
         kwargs = self._input_kwargs
@@ -63,6 +64,7 @@ class PythonAddTransformer(Transformer, HasSelectedCols, HasOutputCol):
     A Transformer which is implemented with Python. Output a column
     contains the sum of all columns.
     """
+
     @keyword
     def __init__(self, *, selected_cols=None, output_col=None):
         super().__init__()
@@ -102,16 +104,16 @@ class PythonModel(Model):
         """
         table_sink = source_sink_utils.TestRetractSink(["max_sum"], [DataTypes.BIGINT()])
         table_env.register_table_sink("Model_Results", table_sink)
-        exec_insert_table(self._model_data_table, "Model_Results")
+        self._model_data_table.execute_insert("Model_Results").wait()
         actual = source_sink_utils.results()
-        self.max_sum = actual.apply(0)
+        self.max_sum = actual.apply(0)[3:-1]
 
     def transform(self, table_env, table):
         """
         Use max_sum to predict input. Return turn if input value is bigger than max_sum
         """
-        return table\
-            .add_columns("features > {} as {}".format(self.max_sum, self._output_col_name))\
+        return table \
+            .add_columns("features > {} as {}".format(self.max_sum, self._output_col_name)) \
             .select("{}".format(self._output_col_name))
 
 
@@ -126,9 +128,9 @@ class PythonPipelineTest(MLTestCase):
 
         source_table = t_env.from_elements([(1, 2, 3, 4), (4, 3, 2, 1)], ['a', 'b', 'c', 'd'])
         transformer = WrapperTransformer(selected_cols=["a", "b"])
-        exec_insert_table(transformer.transform(t_env, source_table), "TransformerResults")
+        transformer.transform(t_env, source_table).execute_insert("TransformerResults").wait()
         actual = source_sink_utils.results()
-        self.assert_equals(actual, ["1,2", "4,3"])
+        self.assert_equals(actual, ["+I[1, 2]", "+I[4, 3]"])
 
     def test_pipeline(self):
         t_env = MLEnvironmentFactory().get_default().get_stream_table_environment()
@@ -145,19 +147,19 @@ class PythonPipelineTest(MLTestCase):
         transformer = PythonAddTransformer(selected_cols=["a", "b"], output_col="features")
 
         # estimator
-        estimator = PythonEstimator()\
-            .set_vector_col("features")\
+        estimator = PythonEstimator() \
+            .set_vector_col("features") \
             .set_prediction_col("predict_result")
 
         # pipeline
         pipeline = Pipeline().append_stage(transformer).append_stage(estimator)
-        exec_insert_table(pipeline.fit(t_env, train_table).transform(t_env, serving_table),
-                          'PredictResults')
+        pipeline.fit(t_env, train_table).transform(t_env, serving_table) \
+            .execute_insert('PredictResults').wait()
 
         actual = source_sink_utils.results()
         # the first input is false since 0 + 0 is smaller than the max_sum 14.
         # the second input is true since 12 + 3 is bigger than the max_sum 14.
-        self.assert_equals(actual, ["false", "true"])
+        self.assert_equals(actual, ["+I[false]", "+I[true]"])
 
     def test_pipeline_from_and_to_java_json(self):
         # json generated from Java api
@@ -179,9 +181,9 @@ class PythonPipelineTest(MLTestCase):
 
         source_table = t_env.from_elements([(1, 2, 3, 4), (4, 3, 2, 1)], ['a', 'b', 'c', 'd'])
         transformer = p.get_stages()[0]
-        exec_insert_table(transformer.transform(t_env, source_table), "TestJsonResults")
+        transformer.transform(t_env, source_table).execute_insert("TestJsonResults").wait()
 
         actual = source_sink_utils.results()
 
-        self.assert_equals(actual, ["1,2", "4,3"])
+        self.assert_equals(actual, ["+I[1, 2]", "+I[4, 3]"])
         self.assertEqual(python_json, java_json)

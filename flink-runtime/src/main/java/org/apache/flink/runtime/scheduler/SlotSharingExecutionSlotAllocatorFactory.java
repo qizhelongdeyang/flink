@@ -18,49 +18,68 @@
 
 package org.apache.flink.runtime.scheduler;
 
-import org.apache.flink.runtime.clusterframework.types.AllocationID;
-import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.jobmaster.slotpool.PhysicalSlotProvider;
-import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
+import org.apache.flink.runtime.jobmaster.slotpool.PhysicalSlotRequestBulkChecker;
+import org.apache.flink.runtime.scheduler.SharedSlotProfileRetriever.SharedSlotProfileRetrieverFactory;
 
-import java.util.function.Function;
-
-/**
- * Factory for {@link SlotSharingExecutionSlotAllocator}.
- */
+/** Factory for {@link SlotSharingExecutionSlotAllocator}. */
 class SlotSharingExecutionSlotAllocatorFactory implements ExecutionSlotAllocatorFactory {
-	private final PhysicalSlotProvider slotProvider;
+    private final PhysicalSlotProvider slotProvider;
 
-	private final boolean slotWillBeOccupiedIndefinitely;
+    private final boolean slotWillBeOccupiedIndefinitely;
 
-	private final SlotSharingStrategy slotSharingStrategy;
+    private final PhysicalSlotRequestBulkChecker bulkChecker;
 
-	private final Function<ExecutionVertexID, ResourceProfile> resourceProfileRetriever;
+    private final Time allocationTimeout;
 
-	private final Function<ExecutionVertexID, AllocationID> priorAllocationIdRetriever;
+    private final SlotSharingStrategy.Factory slotSharingStrategyFactory;
 
-	SlotSharingExecutionSlotAllocatorFactory(
-			PhysicalSlotProvider slotProvider,
-			boolean slotWillBeOccupiedIndefinitely,
-			SlotSharingStrategy slotSharingStrategy,
-			Function<ExecutionVertexID, ResourceProfile> resourceProfileRetriever,
-			Function<ExecutionVertexID, AllocationID> priorAllocationIdRetriever) {
-		this.slotProvider = slotProvider;
-		this.slotWillBeOccupiedIndefinitely = slotWillBeOccupiedIndefinitely;
-		this.slotSharingStrategy = slotSharingStrategy;
-		this.resourceProfileRetriever = resourceProfileRetriever;
-		this.priorAllocationIdRetriever = priorAllocationIdRetriever;
-	}
+    SlotSharingExecutionSlotAllocatorFactory(
+            PhysicalSlotProvider slotProvider,
+            boolean slotWillBeOccupiedIndefinitely,
+            PhysicalSlotRequestBulkChecker bulkChecker,
+            Time allocationTimeout) {
+        this(
+                slotProvider,
+                slotWillBeOccupiedIndefinitely,
+                bulkChecker,
+                allocationTimeout,
+                new LocalInputPreferredSlotSharingStrategy.Factory());
+    }
 
-	@Override
-	public ExecutionSlotAllocator createInstance(PreferredLocationsRetriever preferredLocationsRetriever) {
-		return new SlotSharingExecutionSlotAllocator(
-			slotProvider,
-			slotWillBeOccupiedIndefinitely,
-			slotSharingStrategy,
-			new MergingSharedSlotProfileRetrieverFactory(
-				preferredLocationsRetriever,
-				resourceProfileRetriever,
-				priorAllocationIdRetriever));
-	}
+    SlotSharingExecutionSlotAllocatorFactory(
+            PhysicalSlotProvider slotProvider,
+            boolean slotWillBeOccupiedIndefinitely,
+            PhysicalSlotRequestBulkChecker bulkChecker,
+            Time allocationTimeout,
+            SlotSharingStrategy.Factory slotSharingStrategyFactory) {
+        this.slotProvider = slotProvider;
+        this.slotWillBeOccupiedIndefinitely = slotWillBeOccupiedIndefinitely;
+        this.bulkChecker = bulkChecker;
+        this.slotSharingStrategyFactory = slotSharingStrategyFactory;
+        this.allocationTimeout = allocationTimeout;
+    }
+
+    @Override
+    public ExecutionSlotAllocator createInstance(final ExecutionSlotAllocationContext context) {
+        SlotSharingStrategy slotSharingStrategy =
+                slotSharingStrategyFactory.create(
+                        context.getSchedulingTopology(),
+                        context.getLogicalSlotSharingGroups(),
+                        context.getCoLocationGroups());
+        SyncPreferredLocationsRetriever preferredLocationsRetriever =
+                new DefaultSyncPreferredLocationsRetriever(context, context);
+        SharedSlotProfileRetrieverFactory sharedSlotProfileRetrieverFactory =
+                new MergingSharedSlotProfileRetrieverFactory(
+                        preferredLocationsRetriever, context::getPriorAllocationId);
+        return new SlotSharingExecutionSlotAllocator(
+                slotProvider,
+                slotWillBeOccupiedIndefinitely,
+                slotSharingStrategy,
+                sharedSlotProfileRetrieverFactory,
+                bulkChecker,
+                allocationTimeout,
+                context::getResourceProfile);
+    }
 }
